@@ -1,0 +1,68 @@
+{
+  "name": "PROJECT-NAME",
+  "version": "0.1.0",
+  "description": "$PROJECT_DESCRIPTION$",
+  "keywords": [],
+  "author": "Brian Mearns <mearns.b@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mearns/PROJECT-NAME.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mearns/PROJECT-NAME/issues"
+  },
+  "homepage": "https://github.com/mearns/PROJECT-NAME#readme",
+  "engines": {
+    "node": "^12.14.0"
+  },
+  "main": "src/index.js",
+  "files": [
+    "src/**/*"
+  ],
+  "scripts": {
+    "clean": "rimraf dist/ build/ coverage/ .nyc_output/",
+    "pretty": "pretty-quick --staged",
+    "pretty-all": "prettier --write src/**/*.js ./*.js ./*.json ./*.yaml ./*.yml",
+    "check": "eslint src/ test/ --ext .js --format codeframe",
+    "test": "nyc npm run test-only",
+    "test-only": "mocha test/src/",
+    "verify": "npm run check && npm run test",
+    "start": "node ."
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "npm run pretty -s"
+    }
+  },
+  "devDependencies": {
+    "chai": "^4.2.0",
+    "eslint": "^6.8.0",
+    "eslint-config-prettier": "^6.12.0",
+    "eslint-config-standard": "^14.1.1",
+    "eslint-plugin-import": "^2.22.1",
+    "eslint-plugin-node": "^11.1.0",
+    "eslint-plugin-prettier": "^3.1.4",
+    "eslint-plugin-promise": "^4.2.1",
+    "eslint-plugin-standard": "^4.0.1",
+    "husky": "^4.3.0",
+    "mocha": "^7.2.0",
+    "node": "^13.14.0",
+    "nyc": "^15.1.0",
+    "prettier": "^1.19.1",
+    "pretty-quick": "^2.0.2",
+    "sinon": "^9.2.0",
+    "sinon-chai": "^3.5.0"
+  },
+  "dependencies": {
+    "ansi-colors": "^4.1.1",
+    "bottleneck": "^2.19.5",
+    "build-object-better": "^1.2.3-dev",
+    "just-run-it": "^0.2.7",
+    "mkdirp": "^1.0.4",
+    "multimatch": "^5.0.0",
+    "promise-retry": "^2.0.1",
+    "throat": "^5.0.0",
+    "yargs": "^16.0.3"
+  }
+}
