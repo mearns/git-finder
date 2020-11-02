@@ -286,9 +286,11 @@ async function runSetup(args) {
                         if (args["ignore-failed"]) {
                             return null;
                         }
-                        throw new Error(
-                            `Repo ${originalPath} has failures or is not clean`
-                        );
+                        if (!args["force"] || repoReport.error) {
+                            throw new Error(
+                                `Repo ${originalPath} has failures or is not clean`
+                            );
+                        }
                     }
                     const relPath = originalPath.substr(
                         originalRootDir.length + 1
@@ -482,6 +484,11 @@ async function enter() {
                         alias: "r",
                         description:
                             "Specify the root directory for the new setup."
+                    })
+                    .option("force", {
+                        alias: "f",
+                        type: "boolean",
+                        description: "Setup dirty repos, ignoring their dirt."
                     })
                     .option("ignore-failed", {
                         type: "boolean",
