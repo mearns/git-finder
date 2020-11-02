@@ -36,47 +36,77 @@ async function isRepo(p) {
     return dirExists(path.join(p, ".git"));
 }
 
-const IGNORE_LIST = [".DS_Store"];
+const IGNORE_LIST = [".DS_Store", "node_modules", ".hg", ".idea"];
 
 function ignoreFile(p) {
     return multimatch(p, IGNORE_LIST).length !== 0;
 }
 
-async function findRepos(p, maxDepth = Infinity) {
+async function findRepos(p) {
     if (await isRepo(p)) {
-        return [path.resolve(p)];
+        return [{ path: p, isRepo: true }];
     } else {
-        let hasContents = false;
-        const children = await fs.readdir(p, {
+        const dirEnts = await fs.readdir(p, {
             encoding: "utf8",
             withFileTypes: true
         });
 
-        const repos = [];
+        const childRepos = [];
+        const childDirs = [];
+        const childFiles = [];
         await Promise.all(
-            children.map(async dirEnt => {
+            dirEnts.map(async dirEnt => {
                 const fullPath = path.resolve(p, dirEnt.name);
                 if (!ignoreFile(dirEnt.name)) {
                     if (dirEnt.isDirectory()) {
-                        if (maxDepth > 1) {
-                            if (isRepo(fullPath)) {
-                                repos.push(fullPath);
-                            } else {
-                                repos.push(
-                                    ...(await findRepos(fullPath, maxDepth - 1))
-                                );
-                            }
+                        if (await isRepo(fullPath)) {
+                            childRepos.push(dirEnt.name);
+                        } else {
+                            childDirs.push(...(await findRepos(fullPath)));
                         }
                     } else {
-                        hasContents = true;
+                        childFiles.push(dirEnt.name);
                     }
                 }
             })
         );
-        if (hasContents) {
-            repos.unshift(p);
+
+        /*
+            hasFiles | hasImmediateRepos ||
+            false | false || either empty, or contains only directories which are not themselves repos. So this is just a container directory and we recurse to the children and let them handle it.
+            false | true || Has repos, but may also contain other directories which are or aren't repos. We can delegate to them, but then also add in our own immediate repos as repos.
+            true | false || We need to list this dir as a non-repo. We need to include any descendant repos, but also list out any files as well as any child directories that are non-repos.
+            true | true || Same as above, plus adding in our immediate repos.
+        */
+        if (childFiles.length === 0) {
+            return [
+                ...childRepos.map(name => ({
+                    path: path.resolve(p, name),
+                    isRepo: true
+                })),
+                ...childDirs
+            ];
+        } else {
+            const descendantRepos = childDirs.filter(d => d.isRepo);
+            const childNonRepos = childDirs.filter(d => !d.isRepo);
+            return [
+                ...childRepos.map(name => ({
+                    path: path.resolve(p, name),
+                    isRepo: true
+                })),
+                ...descendantRepos,
+                {
+                    path: p,
+                    isRepo: false,
+                    contents: [
+                        ...childFiles,
+                        ...childNonRepos.map(
+                            d => `${path.relative(p, d.path)}/`
+                        )
+                    ]
+                }
+            ];
         }
-        return repos;
     }
 }
 
@@ -191,32 +221,25 @@ async function getRepoSetup(git) {
 
 async function checkRepo(repo, gitThrottle) {
     try {
-        if (await isRepo(repo)) {
-            const git = new Git(repo, { throttle: gitThrottle });
+        if (repo.isRepo) {
+            const git = new Git(repo.path, { throttle: gitThrottle });
             await git.fetchFromAll({ prune: true });
             const dirt = await getRepoDirt(git);
-            return { repo, setup: await getRepoSetup(git), dirt };
+            return { setup: await getRepoSetup(git), dirt };
         } else {
-            const children = await fs.readdir(repo, {
-                encoding: "utf8",
-                withFileTypes: true
-            });
-
-            const contents = (
-                await Promise.all(
-                    children.map(async dirEnt => {
-                        const isContents =
-                            !ignoreFile(dirEnt.name) && !dirEnt.isDirectory();
-                        return [dirEnt.name, isContents];
-                    })
-                )
-            )
-                .filter(([, isContents]) => isContents)
-                .map(([name]) => name);
-            return { repo, dirt: [["not a repo", { contents }]] };
+            return { dirt: [["not a repo", { contents: repo.contents }]] };
         }
     } catch (error) {
-        return { repo, error };
+        return {
+            error: Object.assign(
+                {
+                    name: error.name,
+                    message: error.message,
+                    stack: error.stack && error.stack.split("\n")
+                },
+                error
+            )
+        };
     }
 }
 
@@ -226,46 +249,17 @@ async function readScanFile(scanFile) {
     return report;
 }
 
-async function getFailedReposAndResultsObject(scanFile) {
-    const report = await readScanFile(scanFile);
-    const failedRepos = Object.entries(report.repos)
-        .filter(([, { dirt, error }]) => error || (dirt && dirt.length))
-        .map(([repo]) => repo);
-    const reposExist = await Promise.all(
-        failedRepos.map(async dir => [await dirExists(dir), dir])
-    );
-    const existingFailedRepos = reposExist
-        .filter(([exists]) => exists)
-        .map(([, repo]) => repo);
-
-    const missingFailedRepos = reposExist
-        .filter(([exists]) => !exists)
-        .map(([, repo]) => repo);
-    missingFailedRepos.forEach(repo => {
-        delete report.repos[repo];
-    });
-    return [existingFailedRepos, report];
-}
-
 async function getReposAndResultsObject(args) {
     const [command] = args._;
     switch (command) {
         case "scan":
             return [
-                await findRepos(
-                    args.directory,
-                    args.recurse || args["max-depth"] <= 0
-                        ? Infinity
-                        : args["max-depth"]
-                ),
+                await findRepos(args.directory),
                 {
                     repos: {},
                     summary: { rootDir: path.resolve(args.directory) }
                 }
             ];
-
-        case "update":
-            return getFailedReposAndResultsObject(args["scan-file"]);
 
         default:
             throw new Error(`Unhandled command: ${command}`);
@@ -381,8 +375,7 @@ async function main(args) {
     const [command] = args._;
     switch (command) {
         case "scan":
-        case "update":
-            return runScanOrUpdate(args);
+            return runScan(args);
 
         case "setup":
             return runSetup(args);
@@ -401,25 +394,38 @@ function createThrottle(args) {
     return throttle;
 }
 
-async function runScanOrUpdate(args) {
+async function runScan(args) {
     const [repos, report] = await getReposAndResultsObject(args);
+
+    const getReportStr =
+        args.output || args.json
+            ? () => JSON.stringify(report, null, 4)
+            : () =>
+                  util.inspect(report, {
+                      depth: Infinity,
+                      colors: true
+                  });
+    const writeOutput = args.output
+        ? () => fs.writeFile(args.output, getReportStr(), "utf8")
+        : () => console.log(getReportStr());
+    const flushOutput = args.output ? writeOutput : () => {};
+
     const throttle = createThrottle(args);
     const repoResults = await Promise.all(
         repos.map(async repo => {
             const res = await checkRepo(repo, throttle);
             const failed = res.error || (res.dirt && res.dirt.length);
             if (failed) {
-                console.log(`❌ ${c.red(repo)}`);
+                console.log(`❌ ${c.red(repo.path)}`);
             } else {
-                console.log(`✔️ ${c.green(repo)}`);
+                console.log(`✔️ ${c.green(repo.path)}`);
             }
+            await flushOutput();
+            report.repos[repo.path] = res;
             return res;
         })
     );
 
-    repoResults.forEach(({ repo, ...props }) => {
-        report.repos[repo] = props;
-    });
     const failures = repoResults.filter(
         ({ error, dirt }) => error || (dirt && dirt.length)
     );
@@ -428,18 +434,7 @@ async function runScanOrUpdate(args) {
         cleanRepos: repos.length - failures.length,
         uncleanRepos: failures.length
     };
-    const reportStr =
-        args.output || args.json
-            ? JSON.stringify(report, null, 4)
-            : util.inspect(report, {
-                  depth: Infinity,
-                  colors: true
-              });
-    if (args.output) {
-        await fs.writeFile(args.output, reportStr, "utf8");
-    } else {
-        console.log(reportStr);
-    }
+    await writeOutput();
 }
 
 async function enter() {
@@ -453,48 +448,6 @@ async function enter() {
                         default: ".",
                         type: "string",
                         description: "The path to the directory to scan"
-                    })
-                    .option("output", {
-                        alias: "o",
-                        type: "string",
-                        describe:
-                            "Path to an output file where the results will be written."
-                    })
-                    .option("recurse", {
-                        alias: ["r", "recursive"],
-                        type: "boolean",
-                        conflicts: "max-depth",
-                        describe: "An alias for setting --max-depth to infinity"
-                    })
-                    .option("max-depth", {
-                        description:
-                            "Set the maximum depth to recurse through the given directory looking for repositories. Set to 0 for infinite depth (same as using --recurse)",
-                        conflicts: "recurse",
-                        type: "number",
-                        default: Infinity
-                    })
-                    .option("json", {
-                        type: "boolean",
-                        describe:
-                            "Output in pure JSON, rather than Node's inspect format. If --output is specified, this is implied and should not be set.",
-                        conflicts: "output"
-                    })
-                    .option("min-time", {
-                        type: "number",
-                        default: 334,
-                        describe:
-                            "The minimum time, in milliseconds, between requests to a remote server"
-                    })
-                    .strict()
-        )
-        .command(
-            "update <scan-file>",
-            "Given a results file from a previous run, recheck any that has previously ailed or come up as being dirty",
-            _y =>
-                _y
-                    .positional("scan-file", {
-                        describe:
-                            "The path to a JSON file previously output by the scan or update command"
                     })
                     .option("output", {
                         alias: "o",
