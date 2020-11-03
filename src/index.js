@@ -8,6 +8,7 @@ const c = require("ansi-colors");
 const mkdirp = require("mkdirp");
 const buildObject = require("build-object-better");
 const multimatch = require("multimatch");
+const track = require("tracking-promise");
 
 async function dirExists(p) {
     try {
@@ -332,44 +333,66 @@ async function runSetup(args) {
         )
     ).filter(op => op !== null);
 
+    const complete = buildObject(
+        repoOperations,
+        op => op.path,
+        () => false
+    );
+
     const throttle = createThrottle(args);
     await Promise.all(
-        repoOperations.map(async op => {
-            await mkdirp(op.path);
-            const git = new Git(op.path, { throttle });
+        repoOperations
+            .map(async op => {
+                await mkdirp(op.path);
+                const git = new Git(op.path, { throttle });
 
-            await git.clone(op.source);
-            await Object.entries(op.setup.remotes).reduce(
-                async (p, [remote, url]) => {
-                    await p;
-                    if (remote !== op.masterRemoteName) {
-                        await git.addRemote(remote, url);
-                    }
-                },
-                Promise.resolve()
-            );
+                await git.clone(op.source);
+                await Object.entries(op.setup.remotes).reduce(
+                    async (p, [remote, url]) => {
+                        await p;
+                        if (remote !== op.masterRemoteName) {
+                            await git.addRemote(remote, url);
+                        }
+                    },
+                    Promise.resolve()
+                );
 
-            await git.fetchFromAll();
-            await git.setTrackingBranch(
-                "master",
-                op.masterRemoteName,
-                op.masterRemoteBranch
-            );
+                await git.fetchFromAll();
+                await git.setTrackingBranch(
+                    "master",
+                    op.masterRemoteName,
+                    op.masterRemoteBranch
+                );
 
-            await Object.entries(op.setup.branches).reduce(
-                async (p, [branch, trackingBranch]) => {
-                    await p;
-                    if (
-                        branch !== "master" &&
-                        (await git.refExists(trackingBranch))
-                    ) {
-                        await git.createBranch(branch, trackingBranch);
-                    }
-                },
-                Promise.resolve()
-            );
-            console.log(`✔️ ${c.green(op.path)}`);
-        })
+                await Object.entries(op.setup.branches).reduce(
+                    async (p, [branch, trackingBranch]) => {
+                        await p;
+                        if (
+                            branch !== "master" &&
+                            (await git.refExists(trackingBranch))
+                        ) {
+                            await git.createBranch(branch, trackingBranch);
+                        }
+                    },
+                    Promise.resolve()
+                );
+                console.log(`✔️ ${c.green(op.path)}`);
+                complete[op.path] = true;
+            })
+            .map(p => track(p))
+    );
+
+    const missing = Object.entries(complete)
+        .filter(([, v]) => v === false)
+        .map(([k]) => k);
+    if (missing.length) {
+        missing.forEach(p => {
+            console.log(`❌ Missing: ${c.red(p)}`);
+        });
+        console.log(c.red(`Missing ${missing.length} repos`));
+    }
+    console.log(
+        `Completed ${Object.entries(complete).length - missing.length} repos`
     );
 }
 

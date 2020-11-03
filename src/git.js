@@ -54,7 +54,7 @@ class Git {
     }
 
     async clone(url) {
-        return this._executeCommand("clone", "--quiet", url, this._dir);
+        return this._remoteCommand("clone", "--quiet", url, this._dir);
     }
 
     async getBranchName() {
